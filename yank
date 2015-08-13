@@ -1,0 +1,13 @@
+#!/bin/sh
+
+SELECTION=CLIPBOARD
+STORAGE="$HOME/.cache/xclipring/$SELECTION"
+cd -- "$STORAGE"
+ENTRY=$(find -type f -printf '%T@ %f\0' |
+               sort -zk 1nr |
+               sed -z 's:^[^ ]* ::' |
+               xargs -0 grep -m 1 . | # todo fold some lines together a bit
+               rofi -dmenu -columns 2 |
+               cut -d':' -f1)
+[ -z "$ENTRY" ] && exit 1
+xclip -i -selection clipboard "$STORAGE/$ENTRY"
