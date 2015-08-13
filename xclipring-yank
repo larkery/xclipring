@@ -6,8 +6,8 @@ cd -- "$STORAGE"
 ENTRY=$(find -type f -printf '%T@ %f\0' |
                sort -zk 1nr |
                sed -z 's:^[^ ]* ::' |
-               xargs -0 grep -m 1 . | # todo fold some lines together a bit
-               rofi -dmenu -columns 2 |
+               xargs -P 1 -n 1 -0 xclipring-simplify |
+               rofi -p 'xclipring' -no-levenshtein-sort -dmenu -columns 2 |
                cut -d':' -f1)
 [ -z "$ENTRY" ] && exit 1
 xclip -i -selection clipboard "$STORAGE/$ENTRY"

@@ -1,0 +1,5 @@
+#!/bin/bash
+
+for x; do
+    sed -e ':a;N;$!ba;s/\n/ /g' "$x" | sed -e 's/^/'$x': /' -r -e 's:[\t\ ]+: :g' -e '$a\'
+done
