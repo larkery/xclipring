@@ -310,8 +310,13 @@ void run_x_loop() {
             //https://tronche.com/gui/x/icccm/sec-2.html
           } else {
             xcb_get_atom_name_reply_t *atomname = xcb_get_atom_name_reply(X, xcb_get_atom_name(X, reply->type), NULL);
-            fprintf(stderr, "reply type = %s\n", xcb_get_atom_name_name(atomname));
-            free(atomname);
+            if (atomname)  {
+              fprintf(stderr, "reply type = %s\n", xcb_get_atom_name_name(atomname));
+              free(atomname);
+            } else {
+              fprintf(stderr, "getting atom name for atom %d yielded null\n",
+                      reply->type);
+            }
           }
           
           xcb_delete_property(X, event->requestor, event->property);
