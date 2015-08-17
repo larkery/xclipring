@@ -150,10 +150,12 @@ int ring_init(char *path, int count) {
   ring_size = count;
   
   if (mkdirs(storage_path)) {
+    fprintf(stderr, "failed in mkdirs %s\n", storage_path);
     return -1;
   }
 
   if (restore_history(storage_path)) {
+    fprintf(stderr, "failed in restore_history from %s\n", storage_path);
     return -1;
   }
 

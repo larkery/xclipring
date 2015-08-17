@@ -51,12 +51,14 @@ int main(int argc, char *argv[]) {
   
   if (run_server) {
     if (!storage_path) {
-      asprintf(&storage_path, "%s/.cache/xclipring/%s", getenv("HOME"), selection);
+      asprintf(&storage_path, "%s/.cache/xclipring/%s/", getenv("HOME"), selection);
     }
     if (ring_init(storage_path, storage_count)) {
+      fprintf(stderr, "failed in ring_init\n");
       exit(1);
     }
     if (x_start_loop(selection)) {
+      fprintf(stderr, "failed in starting loop\n");
       exit(1);
     }
   } else {

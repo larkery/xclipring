@@ -25,6 +25,7 @@
     X(TARGETS),                                 \
     X(INCR),                                    \
     X(INTEGER),                                 \
+    X(CARDINAL),                                \
     X(STRING),                                  \
     X(TEXT),                                    \
     X(XCLIPRING)
@@ -193,7 +194,18 @@ int x_start_loop(char *selection_name) {
       xcb_property_notify_event_t *ev = (xcb_property_notify_event_t*)e;
       if (ev->atom == atoms[XCLIPRING]) {
         // rotate clip ring a bit.
-        
+        xcb_get_property_cookie_t cookie =
+          xcb_get_property(X, 0, window,
+                           atoms[XCLIPRING],
+                           atoms[CARDINAL],
+                           0, 1);
+        xcb_get_property_reply_t *reply;
+        if ((reply = xcb_get_property_reply(X, cookie, NULL)) &&
+            reply->value_len) {
+          int amount = *((int *)xcb_get_property_value(reply));
+          fprintf(stderr, "rotate %d\n", amount);
+          free(reply);
+        }
       }
     } else {
       fprintf(stderr, "another event\n");
@@ -243,8 +255,10 @@ int x_ring_rotate(char *selection_name, int count) {
 
     // send client message to rotate ring
     xcb_change_property(X, XCB_PROP_MODE_REPLACE, reply->owner,
-                        atoms[XCLIPRING], atoms[INTEGER], 32, 1, &count);
+                        atoms[XCLIPRING], atoms[CARDINAL], 32, 1, &count);
 
+    fprintf(stderr, "%d\n", count);
+    
     xcb_flush(X);
     
     free(reply);
