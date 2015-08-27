@@ -12,6 +12,7 @@
 #include <time.h>
 #include <utime.h>
 
+#include "dbg.h"
 #include "ring.h"
 
 static char* storage_path;
@@ -141,6 +142,8 @@ static int restore_history(char *storage_path) {
   if (exists) {
     ring_head = read_entry(ring_pointer);
   }
+
+  LG("ring init %d %d %d", ring_min, ring_pointer, ring_max);
   
   return 0;
 }
@@ -207,12 +210,29 @@ int ring_down() {
 int ring_move(int count) {
   int ring_pointer_before = ring_pointer;
   ring_pointer = (ring_pointer + count) % ring_size;
-  if (ring_pointer > ring_max) ring_pointer = ring_max;
-  if (ring_pointer < ring_min) ring_pointer = ring_min;
+  if (ring_pointer > ring_max) ring_pointer = ring_min;
+  if (ring_pointer < ring_min) ring_pointer = ring_max;
 
-  if (ring_pointer_before == ring_pointer) return -1; // no effect
+  LG("ring move %d %d %d",
+     ring_min, ring_pointer, ring_max);
+  
+  if (ring_pointer_before == ring_pointer) return -1;
+  // no effect
   
   ring_head = read_entry(ring_pointer);
   
   return 0;
+}
+
+int ring_pos() {
+  return ring_pointer;
+}
+
+void ring_shift_head(int pos) {
+  ring_pointer = pos % ring_size;
+
+  if (ring_pointer > ring_max) ring_max = ring_pointer;
+  if (ring_pointer < ring_min) ring_min = ring_pointer;
+
+  ring_store(ring_get());
 }

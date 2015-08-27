@@ -13,8 +13,10 @@
 #include <xcb/xfixes.h>
 #include <xcb/xcb_event.h>
 
+#include "dbg.h"
 #include "x11.h"
 #include "ring.h"
+
 
 #define ATOMS(X)                                \
   X(CLIPBOARD),                                 \
@@ -121,7 +123,7 @@ static int create_window() {
   xcb_map_window(X, window);
   
   xcb_flush(X);
-
+  
   return 0;
 }
 
@@ -156,6 +158,17 @@ static int init_x(char *selection_name) {
 static void handle_selection_converted(xcb_selection_notify_event_t *event);
 static void handle_selection_requested(xcb_selection_request_event_t *event);
 
+static void take_selection() {
+  LG("taking selection");
+  // ask to have the selection - there is probably a response which says yay
+  // that we need to get hold of.
+  xcb_set_selection_owner(X, window, atoms[CLIPBOARD],
+                          XCB_CURRENT_TIME);
+  xcb_flush(X);
+}
+
+int ring_moving = -1;
+
 int x_start_loop(char *selection_name) {
   if (init_x(selection_name)) return -1;
   if (listen_for_change()) return -1;
@@ -168,24 +181,38 @@ int x_start_loop(char *selection_name) {
   
   while ((e = xcb_wait_for_event(X))) {
     if (!e) return 0;
-    
     uint response_type = e->response_type & ~0x80;
     if (response_type == xfixes->first_event + XCB_XFIXES_SELECTION_NOTIFY) {
       // request clipboard transfer as string
       // TODO check this is not our own selection that we have been notified of
-      xcb_convert_selection(X, window,
-                            atoms[CLIPBOARD],
-                            atoms[TARGETS],
-                            atoms[XSEL_DATA],
-                            XCB_CURRENT_TIME);
+      xcb_xfixes_selection_notify_event_t *sel_event =
+        (xcb_xfixes_selection_notify_event_t*) e;
+      if (sel_event->owner == window) {
+        LG("notified of own sel");
+      } else {
+        LG("selection notify");
+        xcb_convert_selection(X, window,
+                              atoms[CLIPBOARD],
+                              atoms[TARGETS],
+                              atoms[XSEL_DATA],
+                              XCB_CURRENT_TIME);
+      }
+
     } else if (XCB_EVENT_RESPONSE_TYPE(e) == XCB_SELECTION_NOTIFY) {
+      LG("selection converted %d", 0);
       handle_selection_converted((xcb_selection_notify_event_t *) e);
     } else if (XCB_EVENT_RESPONSE_TYPE(e) == XCB_SELECTION_REQUEST) {
       // someone wants us to send them the selection
       // can we just send it back as UTF8
+      // we also want to pop the ring to the right place
+      if (ring_moving >= 0) {
+        ring_shift_head(ring_moving);
+        ring_moving = -1;
+      }
       handle_selection_requested((xcb_selection_request_event_t *)e);
     } else if (XCB_EVENT_RESPONSE_TYPE(e) == XCB_SELECTION_CLEAR) {
       // someone else took the selection away, which seems OK
+      LG("selection cleared %d", 0);
     } else if (XCB_EVENT_RESPONSE_TYPE(e) == 0) {
       xcb_generic_error_t *error = (xcb_generic_error_t *) e;
       fprintf(stderr, "delayed error: %u %u %u\n", error->error_code,
@@ -193,22 +220,36 @@ int x_start_loop(char *selection_name) {
     } else if (XCB_EVENT_RESPONSE_TYPE(e) == XCB_PROPERTY_NOTIFY) {
       xcb_property_notify_event_t *ev = (xcb_property_notify_event_t*)e;
       if (ev->atom == atoms[XCLIPRING]) {
+        
         // rotate clip ring a bit.
         xcb_get_property_cookie_t cookie =
           xcb_get_property(X, 0, window,
                            atoms[XCLIPRING],
                            atoms[CARDINAL],
-                           0, 1);
+                           0, 2);
         xcb_get_property_reply_t *reply;
         if ((reply = xcb_get_property_reply(X, cookie, NULL)) &&
-            reply->value_len) {
+            reply->value_len == 2) {
           int amount = *((int *)xcb_get_property_value(reply));
-          fprintf(stderr, "rotate %d\n", amount);
+          int window = *(1 + (int *)xcb_get_property_value(reply));
+          
+          LG("rotate %d %d", amount, window);
+          if (ring_moving < 0) ring_moving = ring_pos();
+          ring_move(amount);
+          char *data = ring_get();
+          int data_len = strlen(data);
+          xcb_change_property(X, XCB_PROP_MODE_REPLACE, window,
+                              atoms[XCLIPRING], atoms[UTF8_STRING], 8,
+                              data_len,
+                              data);
           free(reply);
+          take_selection();
         }
+      } else {
+        LG("property notify %d", ev->atom);
       }
     } else {
-      fprintf(stderr, "another event\n");
+      LG("event %d", e->response_type);
     }
 
     // TODO handle selection gone away errors and take selection in that case as well.
@@ -218,13 +259,6 @@ int x_start_loop(char *selection_name) {
   }
   
   return 0;
-}
-
-static void take_selection() {
-  // ask to have the selection - there is probably a response which says yay
-  // that we need to get hold of.
-  xcb_set_selection_owner(X, window, atoms[CLIPBOARD], XCB_CURRENT_TIME);
-  xcb_flush(X);
 }
 
 int x_ring_rotate(char *selection_name, int count) {
@@ -253,13 +287,43 @@ int x_ring_rotate(char *selection_name, int count) {
       return -1;
     }
 
+    int data[] = {count, window};
+    
     // send client message to rotate ring
     xcb_change_property(X, XCB_PROP_MODE_REPLACE, reply->owner,
-                        atoms[XCLIPRING], atoms[CARDINAL], 32, 1, &count);
+                        atoms[XCLIPRING], atoms[CARDINAL], 32, 2, data);
 
-    fprintf(stderr, "%d\n", count);
-    
+    // await property change back again to say what the ring contains
+    // without doing a copy which requires a shuffle
     xcb_flush(X);
+
+    xcb_generic_event_t *e;    
+    while ((e = xcb_wait_for_event(X))) {
+      if (!e) return 0;
+
+      if (XCB_EVENT_RESPONSE_TYPE(e) == XCB_PROPERTY_NOTIFY) {
+        // someone has set a property so we are happy now
+        xcb_property_notify_event_t *ev = (xcb_property_notify_event_t*)e;
+        if (ev->atom == atoms[XCLIPRING]) {
+          xcb_get_property_cookie_t cookie =
+            xcb_get_property(X, 0, window,
+                             atoms[XCLIPRING],
+                             atoms[UTF8_STRING],
+                             0, UINT_MAX);
+          xcb_get_property_reply_t *reply;
+          if ((reply = xcb_get_property_reply(X, cookie, NULL)) &&
+              reply->value_len) {
+            char *content = (char *) xcb_get_property_value(reply);
+            fprintf(stdout, "%s\n", content);
+            fflush(stdout);
+            free(reply);
+            return 0;
+          }
+        }
+      }
+      
+      free(e);
+    }
     
     free(reply);
   }
@@ -278,26 +342,38 @@ static void handle_selection_requested(xcb_selection_request_event_t *e) {
   ev.time = e->time;
 
   bool ok = false;
+  uint8_t format = 8;
+  uint32_t size = 0;
+  void *data = NULL;
   
   if (e->selection == atoms[CLIPBOARD]) {
     // right selection
     if (e->target == atoms[UTF8_STRING] ||
         e->target == atoms[TEXT] ||
         e->target == atoms[STRING]) {
+      LG("selection requested as string");
+      ok = true;
+      format = 8;
+      char *bytes = ring_get();
+      size = strlen(bytes);
+      data = (void *) bytes;
     } else if (e->target == atoms[INTEGER]) {
+      LG("selection requested as integer");
       // timestamp of the selection?
       // TODO also should we be posting a selection changed event when we rotate the ring?
       //      after all, we still own the selection but we have changed what we will offer
-      // TODO how should we accept invitations to rotate the ring? x events or signals?
-      // client messages appear to be the thing here; not sure how we identify the right window.
     } else if (e->target == atoms[TARGETS]) {
       // make targets response (we can do the above options)
-      
+      LG("selection target list requested");
     }
 
     if (ok) {
       // we send the data by setting a property on the target window
-      //xcb_change_property(X, mode, e->requestor, e->property, target, format, size, data);
+      xcb_change_property(X, XCB_PROP_MODE_REPLACE,
+                          e->requestor, e->property,
+                          e->target, format, size, data);
+      ev.property = e->property;
+      // are we meant to delete the property at the end?
     }
   }
 
@@ -355,7 +431,7 @@ static void handle_selection_converted(xcb_selection_notify_event_t *event) {
       } else if (reply->type == atoms[INCR]) {
         // incremental stuff not implemented
         // https://tronche.com/gui/x/icccm/sec-2.html
-        fprintf(stderr, "recvd reply as incr. not sure what to do.\n");
+        fprintf(stderr, "recvd reply as incr. not sure what to do. panic!\n");
       } else {
         xcb_get_atom_name_reply_t *atomname =
           xcb_get_atom_name_reply(X, xcb_get_atom_name(X, reply->type), NULL);
